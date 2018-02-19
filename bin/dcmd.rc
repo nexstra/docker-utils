@@ -1,0 +1,151 @@
+#!/bin/sed 1,1p
+#  MUST BE SOURCED
+#
+unset cmd
+[ -n "$DCMD_DEBUG" ] && set -x
+case "$OSTYPE" in
+  darwin*) _SEDREG=-E ;;
+  *gnu*) _SEDREG=-r ;;
+esac
+message() {
+  printf "%s\n" "$*" >&2
+}
+
+loadcommands() { 
+  declare -a _cl
+  local _c _g _group
+  declare -g -a _cl 
+  declare -g -A _groups _commands
+  readarray -t _cl < <(findcmd) ;
+  for _c in "${_cl[@]}" ; do
+     IFS="@#" read _a _n _r <<<"$_c"
+     if [ -z "$_a" ] ; then 
+         _group=$_n;
+         _a=$_n;
+      fi
+      _groups[$_group]+="$_a "
+     _commands[$_a]="$_n#$_r"
+  done
+} 
+
+findcmd() {
+    egrep '^((\s*[a-z-]+\)\s*#@)|(\s*#@@)).*$'  < "$0" | 
+    sed $_SEDREG -e 's/(^#@@\s+)/@/' \
+        -e 's/\)(\s+#@\s+)?/@/' -e 's/^\s+//' -e  's/\s*#\s*/#/g' 
+}
+findgroup() {
+    # egrep '^\s*(#@@.*)$'  < "$0" | sed $_SEDREG -e 's/(^#@@\s+)?/@/' -e 's/\s*#\s*/#/g' 
+    printf "%s\n" "${_groups[@]}"
+}
+help_command() { 
+ printf "Command: %s\n" "$1" >&2
+ if [ -n "${_commands[$1]}" ] ; then 
+   _help "$@" ;
+ else 
+    for _c in ${!_commands[@]} ; do
+       [[ "$_c" =~ ^$1 ]] && _help $_c "$@"
+    done
+  fi   |  column -s "#@" -t
+}
+
+_help() {
+ local _c="$1" 
+ local _cmd=${_commands[$_c]}
+ shift
+ printf "%s@%s\n" "$_c" "$_cmd" >&2
+}
+
+cmd=""
+help_group() {
+ if [ $# -eq 0 ] ; then
+    for _g in "${!_groups[@]}" ; do 
+       declare _l="${_commands[$_g]}"
+       printf "\t group @%s\t%s\n"  "$_g" "$_l"
+    done
+    return 
+ fi
+  _g="$1" ; shift ;
+  _cmds=${_groups[$_g]}
+  printf "Command Group: $_g\n\n"
+  for _c in $_cmds ; do 
+     [[ $_c != $_g ]] && _help "$_c" "$@" 
+   done |  column -s "#@" -t
+
+}
+help() {
+  [ -v _commands ] || loadcommands
+  if (( $# )) ;  then
+     _n="$1" ; shift 
+     case "$_n" in 
+     help) help "$@" ;;
+     @*) help_group "${_n:1}" "$@" ;;
+     *) help_command "$_n" "$@" ;;
+     esac
+     exit 1
+  else
+    printf "Usage:  %s cmd [arg ..]\n" "awscmd"
+  fi
+
+  help_group "$@"
+#  findcmd
+# findgroup | sed  -e 's/^/@/'  | column -t -s'#@' ; 
+  message '################'
+# findcmd | sed  -e 's/^([^@])/$1@@/' -e 's/^@//'  | column -t -s'#@'
+  exit 1
+}
+
+
+
+need() {
+ local need=$# 
+ declare -i got=${#args[@]}-1 ; 
+ (( got >= need )) || help $cmd "$@"
+ declare -i _n
+ for (( _n = 1 ; _n <= got ; _n++ )) ; do
+     declare -g "$1"="${args[$_n]}"
+     shift ;
+ done 
+ return $((_n-1))
+}
+
+inlist() {
+  local _is="$1"
+  shift;
+  local _list
+  for _list ; do
+     [ "$_is" == "$_list" ] && return 0
+  done
+  return 1
+}
+
+
+stackargs=()
+listfilter=(jq -r '.[]')
+listquery=('')
+unset query
+unset filter
+doprint=true
+dolist=false
+
+#
+# Wrapper around the native 'docker' command
+#
+docker() {
+  #if $dolist ; then
+     #[ -v listquery ] && echo declare -a  #_q=(--query "${listquery[@]}")
+     [ -v listfilter ] && declare -a _f=("${listfilter[@]}")
+  #else
+     #[ -v query ] && echo declare -a  #_q=(--query "${query[@]}")
+     #[ -v filter ] && echo declare -a # _f=("${filter[@]}")
+   #fi
+
+   if $doprint ; then
+       printf "+++   docker"  >&2
+       printf " %s" "$@" "${_q[@]}" "${dockerflags[@]}"  >&2
+       printf "\n" >&2
+   fi
+   #if [ -v _f ] ; then
+    command docker "$@" "${_q[@]}" "${dockerflags[@]}"   |  "${_f[@]}"
+  #fi
+
+}

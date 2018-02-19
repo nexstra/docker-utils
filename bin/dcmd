@@ -1,0 +1,174 @@
+#!/bin/bash
+ROOT=$(realpath -m "${BASH_SOURCE[0]}/../..")
+. "$ROOT/bin/dcmd.rc"
+
+
+
+
+ECR=${ECR:-$AWS_ECR}
+repos() 
+{ 
+  command docker images --format "{{.Repository}}" |sort -u
+}
+images () 
+{ 
+  command docker images --format "{{.Repository}}:{{.Tag}}"  |grep -v '<none>' |sort -u
+}
+
+lastimage() {
+   command docker images --format '{ "date" : "{{.CreatedAt}}", "image":"{{.Repository}}","id":"{{.ID}}","tag":"{{.Tag}}"}' "$1" | 
+   jq  -s 'sort_by(.date)|.[]|select(.tag != "latest")|select(.tag != "")| select(.tag != "<none>")' | jq -s -r '.[0]' #|(.id+" "+.image+":"+.tag)'
+}
+imagelike()
+{
+  command docker images --format "{{.ID}} {{.Tag}} {{.Repository}} {{.CreatedSince}}"   |  grep "$1"
+}
+
+rmlike() {
+  imagelike "$1"|
+   while read id tag repo ; do
+    printf "Removing $id $tag $reo\n" >&2
+    command docker rmi "$id"
+  done
+}
+
+ours(){
+  while IFS== read x r eol ; do
+    echo $r
+  done < build/versions.properties
+}      
+
+tagours() {
+  for r in $(ours) ; do 
+    command docker tag "$r" "$ECR/$r" 
+  done
+}
+push() {
+  local r="$1"
+  echo "pushing $r" >&2
+  command docker tag "$r" "$ECR/$r" 
+  command docker push "$ECR/$r"
+  command docker rmi "$ECR/$r"
+}
+
+pushours() {
+  for r in $(ours) ; do
+      command docker tag "$r" "$ECR/$r" 
+      command docker push "$ECR/$r"
+    done
+}
+
+createrepo() {
+  aws ecr create-repository --repository-name "${1%%:*}"
+}
+
+createours() {
+ for r in $(ours) ; do
+    createrepo $r
+ done
+}
+
+
+[ $# -gt 0 ] || help
+# Collect flags
+query=()
+filter=(jq .)
+args=()
+stack_params=()
+tag_params=()
+ate=()
+doall=false
+while [ $# -gt 0 ] ; do
+  case "$1" in
+  --) shift ; break ;;
+  -q|--quiet) doprint=false ;;
+  --list) dolist=true ; ate+=("$1") ; shift ;;
+  --) shift;break ;; # -- aws args
+  *) args+=("$1") ;;
+  esac
+  shift
+done
+dockerflags=("$@")
+set -- "${args[@]}"
+cmd="$1" ; shift 
+
+case "$cmd" in
+#@@ general   # General purpose commands
+
+environment) #@ prints effective AWS environment
+  message "Environment Variables:"
+  showdm
+  ;;
+  
+#########################################################################
+#@@ image # Image related command
+
+images) #@  # lists all images
+  doprint=false
+  docker images "$@"
+  ;;
+
+like) #@ 
+  need what
+  imagelike "$what"
+  ;;
+  
+
+#########################################################################
+#@@ ctr # Container related commands
+#########################################################################
+list-containers) #@ list task definitions
+  command docker ps -a "$@"
+  ;;
+
+docker) #@  [command ...] # run native aws command
+  docker "$@" ;;
+
+logs) #@ container # Show container logs, JSON parsed
+ filter=()
+ need c ; shift $?
+   command docker logs  "$c" | while read line  ; do
+     if true || [[ "$line" =~ ^{.* ]] ; then 
+        echo "$line" #| jq .
+    else 
+      printf  "%s\n" "$line"
+    fi
+    done 
+    ;;  
+
+####################################
+#@@ img # Image related commands
+########################################
+our-images)
+  ours ;;
+tag-ours)
+  tagours ;;
+
+push-ours)
+  pushours ;;
+create-repo*)
+  need repo; shift $?
+  createrepo "$repo" "$@"
+   ;;
+
+list-repo*) 
+  awscmd "$cmd"  "${ate[@]}" "$@"
+   ;;
+
+list-images*) 
+  awscmd "$cmd"  "${ate[@]}" "$@"
+   ;;
+echo) #@ [args...] # echo all args
+  echo "$@" 
+  ;; 
+cmd|sh|bash|xargs) #@ [args...] # pass each arg to command
+  "$cmd" "$@" 
+  ;;
+###################################
+  *)  
+    doprint=false
+    if declare -f "$cmd" >/dev/null 2>&1; then "$cmd" "$@" ; else  
+    help "$cmd" "$@" 
+    fi
+    ;; 
+esac
